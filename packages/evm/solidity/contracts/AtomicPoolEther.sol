@@ -125,15 +125,17 @@ contract AtomicPoolEther {
       if (
         htlc.hasHTLC(lp_signature.hashlock) &&
         lp_signature.amount == cur_htlc.amount &&
-        lp_signature.srcReceiver != cur_htlc.srcReceiver &&
-        lp_signature.timelock != cur_htlc.timelock
+        lp_signature.srcReceiver == cur_htlc.srcReceiver &&
+        lp_signature.timelock == cur_htlc.timelock
       ) {
         revert CanNotPunish();
       } else {
         if (lp_signature.hashlock == sha256(abi.encodePacked(secret))) {
           atomicpool.punished = true;
-          (bool success, ) = msg.sender.call{ value: atomicpool.huge_amount }('');
-          require(success, 'Transfer failed');
+          (bool success, ) = lp_signature.srcReceiver.call{ value: lp_signature.amount }('');
+          require(success, 'srcReceiver Transfer failed');
+          (bool successp, ) = address(0).call{ value: atomicpool.huge_amount - lp_signature.amount }('');
+          require(successp, 'Punishment failed');
           emit LPunished(msg.sender, atomicpool.huge_amount);
         } else {
           revert HashlockNotMatch();
