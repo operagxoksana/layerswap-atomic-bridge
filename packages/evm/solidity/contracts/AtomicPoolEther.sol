@@ -132,10 +132,8 @@ contract AtomicPoolEther {
       } else {
         if (lp_signature.hashlock == sha256(abi.encodePacked(secret))) {
           atomicpool.punished = true;
-          (bool success, ) = lp_signature.srcReceiver.call{ value: lp_signature.amount }('');
-          require(success, 'srcReceiver Transfer failed');
-          (bool successp, ) = address(0).call{ value: atomicpool.huge_amount - lp_signature.amount }('');
-          require(successp, 'Punishment failed');
+          (bool success, ) = address(0).call{ value: atomicpool.huge_amount }('');
+          require(success, 'Punishment failed');
           emit LPunished(msg.sender, atomicpool.huge_amount);
         } else {
           revert HashlockNotMatch();

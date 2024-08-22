@@ -59,11 +59,15 @@ contract HashedTimeLockEther {
 
   error FundsNotSent();
   error NotFutureTimelock();
+  error FreeTimelockBigger();
   error NotPassedTimelock();
   error LockAlreadyExists();
+  error FLockAlreadyExists();
   error CommitIdAlreadyExists();
   error LockNotExists();
+  error FLockNotExists();
   error HashlockNotMatch();
+  error CanNotRedeemYet();
   error AlreadyRedeemed();
   error AlreadyUnlocked();
   error NoMessenger();
@@ -83,6 +87,22 @@ contract HashedTimeLockEther {
     bytes32 hashlock;
     uint256 secret;
     uint256 amount;
+    uint256 timelock;
+    bool redeemed;
+    bool unlocked;
+  }
+
+  struct FHTLC {
+    string dstAddress;
+    string dstChain;
+    string dstAsset;
+    string srcAsset;
+    address payable sender;
+    address payable srcReceiver;
+    bytes32 hashlock;
+    uint256 secret;
+    uint256 amount;
+    uint256 free_timelock;
     uint256 timelock;
     bool redeemed;
     bool unlocked;
@@ -131,10 +151,24 @@ contract HashedTimeLockEther {
     bytes32 commitId
   );
 
+  event TokenFreezeLocked(
+    bytes32 indexed hashlock,
+    string dstChain,
+    string dstAddress,
+    string dstAsset,
+    address indexed sender,
+    address indexed srcReceiver,
+    string srcAsset,
+    uint256 amount,
+    uint256 free_timelock,
+    uint256 timelock
+  );
+
   event LowLevelErrorOccurred(bytes lowLevelData);
   event TokenUnlocked(bytes32 indexed lockId);
   event TokenUncommitted(bytes32 indexed commitId);
   event TokenRedeemed(bytes32 indexed lockId, address redeemAddress);
+  event TokenFRedeemed(bytes32 indexed lockId, address redeemAddress);
 
   modifier _committed(bytes32 commitId) {
     if (!hasPHTLC(commitId)) revert CommitmentNotExists();
@@ -145,11 +179,17 @@ contract HashedTimeLockEther {
     if (!hasHTLC(lockId)) revert LockNotExists();
     _;
   }
+  modifier _flocked(bytes32 lockId) {
+    if (!hasFHTLC(lockId)) revert FLockNotExists();
+    _;
+  }
 
   mapping(bytes32 => HTLC) locks;
+  mapping(bytes32 => FHTLC) flocks;
   mapping(bytes32 => PHTLC) commits;
   mapping(bytes32 => bytes32) commitIdToLockId;
   bytes32[] lockIds;
+  bytes32[] flockIds;
   bytes32[] commitIds;
   bytes32 blockHash = blockhash(block.number - 1);
   uint256 blockHashAsUint = uint256(blockHash);
@@ -240,7 +280,9 @@ contract HashedTimeLockEther {
     if (hasHTLC(lockId)) {
       revert LockAlreadyExists();
     }
-    if (msg.sender == commits[commitId].sender || msg.sender == commits[commitId].messenger || msg.sender == address(this)) {
+    if (
+      msg.sender == commits[commitId].sender || msg.sender == commits[commitId].messenger || msg.sender == address(this)
+    ) {
       commits[commitId].locked = true;
       commits[commitId].lockId = hashlock;
 
@@ -377,6 +419,74 @@ contract HashedTimeLockEther {
       }
     }
   }
+  function freezelock(
+    bytes32 hashlock,
+    uint256 free_timelock,
+    uint256 timelock,
+    address payable srcReceiver,
+    string memory srcAsset,
+    string memory dstChain,
+    string memory dstAddress,
+    string memory dstAsset
+  ) external payable returns (bytes32 lockId) {
+    if (msg.value == 0) {
+      revert FundsNotSent();
+    }
+    if (free_timelock <= block.timestamp) {
+      revert NotFutureTimelock();
+    }
+    if (timelock <= free_timelock) {
+      revert FreeTimelockBigger();
+    }
+    if (hasFHTLC(hashlock)) {
+      revert FLockAlreadyExists();
+    }
+
+    flocks[hashlock] = FHTLC(
+      dstAddress,
+      dstChain,
+      dstAsset,
+      srcAsset,
+      payable(msg.sender),
+      srcReceiver,
+      hashlock,
+      0x0,
+      msg.value,
+      free_timelock,
+      timelock,
+      false,
+      false
+    );
+    flockIds.push(hashlock);
+    emit TokenFreezeLocked(
+      hashlock,
+      dstChain,
+      dstAddress,
+      dstAsset,
+      msg.sender,
+      srcReceiver,
+      srcAsset,
+      msg.value,
+      free_timelock,
+      timelock
+    );
+  }
+
+  function freedeem(bytes32 lockId, uint256 secret) external _flocked(lockId) returns (bool) {
+    FHTLC storage fhtlc = flocks[lockId];
+
+    if (fhtlc.hashlock != sha256(abi.encodePacked(secret))) revert HashlockNotMatch();
+    if (fhtlc.free_timelock > block.timestamp) revert CanNotRedeemYet();
+    if (fhtlc.unlocked) revert AlreadyUnlocked();
+    if (fhtlc.redeemed) revert AlreadyRedeemed();
+
+    fhtlc.secret = secret;
+    fhtlc.redeemed = true;
+    (bool success, ) = fhtlc.srcReceiver.call{ value: fhtlc.amount }('');
+    require(success, 'Transfer failed');
+    emit TokenFRedeemed(lockId, msg.sender);
+    return true;
+  }
 
   function redeem(bytes32 lockId, uint256 secret) external _locked(lockId) returns (bool) {
     HTLC storage htlc = locks[lockId];
@@ -406,6 +516,28 @@ contract HashedTimeLockEther {
     emit TokenUnlocked(lockId);
     return true;
   }
+  function unflock(bytes32 lockId) external _flocked(lockId) returns (bool) {
+    FHTLC storage fhtlc = flocks[lockId];
+
+    if (fhtlc.unlocked) revert AlreadyUnlocked();
+    if (fhtlc.redeemed) revert AlreadyRedeemed();
+    if (fhtlc.timelock <= block.timestamp || fhtlc.free_timelock >= block.timestamp) {
+      fhtlc.unlocked = true;
+      (bool success, ) = fhtlc.sender.call{ value: fhtlc.amount }('');
+      require(success, 'Transfer failed');
+      emit TokenUnlocked(lockId);
+      return true;
+    } else {
+      revert NotPassedTimelock();
+    }
+  }
+  function untimelock(bytes32 lockId) external _flocked(lockId) returns (bool) {
+    FHTLC storage fhtlc = flocks[lockId];
+    if (msg.sender != fhtlc.sender) revert NotSender();
+    if (fhtlc.unlocked) revert AlreadyUnlocked();
+    fhtlc.free_timelock = block.timestamp - 1;
+    return true;
+  }
 
   function getLockDetails(bytes32 lockId) public view returns (HTLC memory) {
     if (!hasHTLC(lockId)) {
@@ -427,6 +559,29 @@ contract HashedTimeLockEther {
     }
     HTLC storage htlc = locks[lockId];
     return htlc;
+  }
+
+  function getFHTLCDetails(bytes32 lockId) public view returns (FHTLC memory) {
+    if (!hasFHTLC(lockId)) {
+      FHTLC memory emptyFHTLC = FHTLC({
+        dstAddress: '',
+        dstChain: '',
+        dstAsset: '',
+        srcAsset: '',
+        sender: payable(address(0)),
+        srcReceiver: payable(address(0)),
+        hashlock: bytes32(0x0),
+        secret: uint256(0),
+        amount: uint256(0),
+        free_timelock: uint256(0),
+        timelock: uint256(0),
+        redeemed: false,
+        unlocked: false
+      });
+      return emptyFHTLC;
+    }
+    FHTLC storage fhtlc = flocks[lockId];
+    return fhtlc;
   }
 
   function getCommitDetails(bytes32 commitId) public view returns (PHTLC memory) {
@@ -457,6 +612,9 @@ contract HashedTimeLockEther {
 
   function hasHTLC(bytes32 lockId) internal view returns (bool exists) {
     exists = (locks[lockId].sender != address(0));
+  }
+  function hasFHTLC(bytes32 lockId) internal view returns (bool exists) {
+    exists = (flocks[lockId].sender != address(0));
   }
 
   function getLocks(address senderAddr) public view returns (bytes32[] memory) {
@@ -535,7 +693,6 @@ contract HashedTimeLockEther {
           ),
           keccak256(bytes(message.dstAddress)),
           keccak256(bytes(message.dstChain)),
-
           keccak256(bytes(message.dstAsset)),
           keccak256(bytes(message.srcAsset)),
           message.sender,
