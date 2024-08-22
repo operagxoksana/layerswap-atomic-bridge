@@ -8,7 +8,7 @@ const hre = require('hardhat');
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 async function main() {
-    const AtomicPoolEther = await hre.ethers.deployContract('AtomicPoolEther', []);
+    const AtomicPoolEther = await hre.ethers.deployContract('AtomicPoolEther', ["0xB0E628A911555150bB1eb068CB3Bc06C40D989df"]);
 
     await AtomicPoolEther.waitForDeployment();
 
@@ -18,7 +18,7 @@ async function main() {
 
     await hre.run('verify:verify', {
         address: AtomicPoolEther.target,
-        constructorArguments: [],
+        constructorArguments: ["0xB0E628A911555150bB1eb068CB3Bc06C40D989df"],
         contract: 'contracts/AtomicPoolEther.sol:AtomicPoolEther',
     });
 }
