@@ -67,6 +67,7 @@ contract HashedTimeLockEther {
   error LockNotExists();
   error FLockNotExists();
   error HashlockNotMatch();
+  error NotSender();
   error CanNotRedeemYet();
   error AlreadyRedeemed();
   error AlreadyUnlocked();
